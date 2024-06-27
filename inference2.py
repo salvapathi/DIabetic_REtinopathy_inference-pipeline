@@ -32,20 +32,7 @@ from datetime import datetime
 from tensorflow.keras.preprocessing import image  
 from pydantic import BaseModel, Field
 from typing import Optional
-# additional_features = [
-#     10.896195065561075,  # HbA1c
-#     150.69693481299157,  # Systolic_BP
-#     97.58934460717728,   # Diastolic_BP
-#     193.71066317092425,  # LDL
-#     21.41599013207625,   # Duration
-#     41.20415312086392,   # BMI
-#     30.84676095056483,   # Glucose_SD
-#     311.23456504422853,  # Triglycerides
-#     120.01877115621907,  # Microalbuminuria
-#     23,                  # Smoking_years
-#     6,                   # Alcohol_frequency
-#     154.44188252476644   # BP
-# ]
+import pickle 
 
 
 # Load your saved model
@@ -55,9 +42,13 @@ app1 = FastAPI(title="Diabetic Retinopathy Detection using AI")
 # Ensure the directory exists
 save_directory.mkdir(parents=True, exist_ok=True)
 
-
+scaler_file=r"C:\Users\DELL\Desktop\DRD\additional_features_scaler.pkl"
+def load_scalar(scaler_file):
+    with open(scaler_file, "rb") as f:
+        scaler = pickle.load(f)
+        return scaler
 # Function to predict class for a single record
-async def process_and_predict(image_file,file_path,additional_features):
+async def process_and_predict(image_file,file_path,additional_features,scaler_file):
     contents = await image_file.read()
     # Save the image to the specified file_path
     with open(file_path, 'wb') as f:
@@ -71,11 +62,12 @@ async def process_and_predict(image_file,file_path,additional_features):
   
     # Convert additional features to numpy array and scale
     additional_features = np.array(additional_features).reshape(1, -1)
-    scaler = StandardScaler()
-    additional_features = scaler.fit_transform(additional_features)
+    scaler=load_scalar(scaler_file)
+    additional_features = scaler.transform(additional_features)
 
    
     predictions = model.predict([img_array, additional_features])
+    print(predictions)
     # Get predicted class and confidence
     predicted_class = np.argmax(predictions[0])
     print(predicted_class)
@@ -124,11 +116,11 @@ async def process_and_predict(image_file,file_path,additional_features):
     # Return the structured result
     return {
         "predicted_class": result["predicted_class"],
+        "stage":result["Stage"],
         "confidence": result["confidence"],
         "explanation": result["explanation"],
         "Note": result["warning"],
         "Risk" :f"{Risk}%",
-        "stage":result["Stage"]
         }
 
 
@@ -186,7 +178,7 @@ def insert_into_db(
         if connection.is_connected():
             cursor.close()
 # Get predictions and confidences
-@app1.post("/predict")
+@app1.post("/Prediction")
 async def predict_image_class(
     patient_id: int,
     right_eye: UploadFile = File(...), 
@@ -206,7 +198,7 @@ async def predict_image_class(
     left_eye_path = save_directory / f"{patient_id}_left_eye.jpg"
 
     # Process and predict for the right eye
-    right_eye_result = await process_and_predict(right_eye, right_eye_path,additional_features)
+    right_eye_result = await process_and_predict(right_eye, right_eye_path,additional_features,scaler_file)
     print(right_eye_result)
      # Extract details from the result
     predicted_class = right_eye_result["predicted_class"]
@@ -247,7 +239,7 @@ async def predict_image_class(
     )
 
     # Process and predict for the left eye
-    left_eye_result = await process_and_predict(left_eye, left_eye_path,additional_features)
+    left_eye_result = await process_and_predict(left_eye, left_eye_path,additional_features,scaler_file)
     predicted_class = left_eye_result["predicted_class"]
     stage=left_eye_result["stage"]
     explanation = left_eye_result["explanation"]
@@ -290,7 +282,33 @@ async def predict_image_class(
         "right_eye": right_eye_result,
         "left_eye": left_eye_result
     })
+@app1.get("/Getting the patient records")
+def get_patient_data():
+    try:
+        # Establish the connection
+        connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password='iscs_user',
+            database="patient"
+        )
+        
+        if connection.is_connected():
+            cursor = connection.cursor(dictionary=True)  # Use dictionary=True to return results as dicts
+            cursor.execute("SELECT * FROM patient_data")
+            
+            # Fetch the results
+            results = cursor.fetchall()
+            
+            if not results:
+                raise HTTPException(status_code=404, detail="No patient records found")
+                
+            return results
+    
+    except Error as e:
+        raise HTTPException(status_code=500, detail=f"Error while connecting to MySQL: {str(e)}")
+    
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app1, host="0.0.0.0", port=7000)
+    uvicorn.run(app1, host="0.0.0.0", port=8000)
